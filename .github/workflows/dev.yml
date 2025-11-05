@@ -1,0 +1,84 @@
+name: Development Build & Deploy
+
+# Trigger workflow on push to dev branch
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - dev
+
+# Environment variables
+env:
+  NODE_ENV: development
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy to Dev
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js environment
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Step 3: Cache npm dependencies to speed up builds
+      # This caches node_modules and npm cache based on package-lock.json
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            node_modules
+            .next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-
+
+      # Step 4: Install dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # Step 5: Run linting to check code quality
+      - name: Run linter
+        run: npm run lint
+        continue-on-error: true
+
+      # Step 6: Build the Next.js application
+      - name: Build application
+        run: npm run build
+        env:
+          NODE_ENV: development
+
+      # Step 7: Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Step 8: Deploy to AWS S3 Development bucket
+      - name: Deploy to AWS S3 Dev
+        run: |
+          aws s3 sync out/ s3://${{ secrets.DEV_S3_BUCKET }} --delete --cache-control max-age=31536000,public
+
+      # Step 9: Invalidate CloudFront cache for Dev
+      - name: Invalidate CloudFront Dev Cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.DEV_CLOUDFRONT_ID }} \
+            --paths "/*"
+
+      # Step 10: Output build success
+      - name: Build completed
+        run: |
+          echo "Development build completed successfully!"
+          echo "Deployed to S3 bucket: ${{ secrets.DEV_S3_BUCKET }}"

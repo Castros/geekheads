@@ -1,0 +1,204 @@
+name: Deploy Infrastructure (Terraform)
+
+# This workflow deploys Terraform infrastructure and automatically updates GitHub secrets
+# Triggered manually via workflow_dispatch or on infrastructure changes
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+      project:
+        description: 'Project name'
+        required: true
+        type: choice
+        options:
+          - geekheads
+      action:
+        description: 'Terraform action'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+  push:
+    paths:
+      - 'terraform/**'
+    branches:
+      - main
+
+env:
+  TF_VERSION: '1.6.0'
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  terraform:
+    name: 'Terraform ${{ github.event.inputs.action || ''plan'' }}'
+    runs-on: ubuntu-latest
+
+    # Use environment for approval gates (optional)
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}
+
+    defaults:
+      run:
+        working-directory: terraform/sites/${{ github.event.inputs.project || 'geekheads' }}/${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Step 3: Setup Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false  # Important for output parsing
+
+      # Step 4: Terraform Format Check
+      - name: Terraform Format
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      # Step 5: Terraform Init
+      - name: Terraform Init
+        run: terraform init
+
+      # Step 6: Terraform Validate
+      - name: Terraform Validate
+        run: terraform validate
+
+      # Step 7: Terraform Plan
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -no-color -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+        continue-on-error: true
+
+      # Step 8: Comment Plan on PR (if applicable)
+      - name: Comment Plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('plan.txt', 'utf8');
+            const output = `#### Terraform Plan 📖
+            <details><summary>Show Plan</summary>
+
+            \`\`\`hcl
+            ${plan}
+            \`\`\`
+
+            </details>`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      # Step 9: Terraform Apply
+      - name: Terraform Apply
+        if: |
+          (github.event.inputs.action == 'apply' ||
+           github.event_name == 'push') &&
+          github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve tfplan
+
+      # Step 10: Terraform Destroy
+      - name: Terraform Destroy
+        if: github.event.inputs.action == 'destroy'
+        run: terraform destroy -auto-approve
+
+      # Step 11: Extract Terraform Outputs
+      - name: Extract Terraform Outputs
+        if: |
+          (github.event.inputs.action == 'apply' ||
+           github.event_name == 'push') &&
+          github.ref == 'refs/heads/main'
+        id: outputs
+        run: |
+          S3_BUCKET=$(terraform output -raw s3_bucket_name)
+          CLOUDFRONT_ID=$(terraform output -raw cloudfront_distribution_id)
+          WEBSITE_URL=$(terraform output -raw website_url)
+
+          echo "s3_bucket=$S3_BUCKET" >> $GITHUB_OUTPUT
+          echo "cloudfront_id=$CLOUDFRONT_ID" >> $GITHUB_OUTPUT
+          echo "website_url=$WEBSITE_URL" >> $GITHUB_OUTPUT
+
+      # Step 12: Update GitHub Secrets Automatically
+      - name: Update GitHub Secrets
+        if: |
+          (github.event.inputs.action == 'apply' ||
+           github.event_name == 'push') &&
+          github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+          S3_BUCKET: ${{ steps.outputs.outputs.s3_bucket }}
+          CLOUDFRONT_ID: ${{ steps.outputs.outputs.cloudfront_id }}
+        run: |
+          # Determine secret prefix based on environment
+          if [ "$ENVIRONMENT" == "dev" ]; then
+            PREFIX="DEV"
+          elif [ "$ENVIRONMENT" == "prod" ]; then
+            PREFIX="PROD"
+          else
+            PREFIX=$(echo "$ENVIRONMENT" | tr '[:lower:]' '[:upper:]')
+          fi
+
+          # Update S3 bucket secret
+          gh secret set "${PREFIX}_S3_BUCKET" --body "$S3_BUCKET" --repo ${{ github.repository }}
+          echo "✓ Updated ${PREFIX}_S3_BUCKET"
+
+          # Update CloudFront ID secret
+          gh secret set "${PREFIX}_CLOUDFRONT_ID" --body "$CLOUDFRONT_ID" --repo ${{ github.repository }}
+          echo "✓ Updated ${PREFIX}_CLOUDFRONT_ID"
+
+      # Step 13: Summary
+      - name: Deployment Summary
+        if: |
+          (github.event.inputs.action == 'apply' ||
+           github.event_name == 'push') &&
+          github.ref == 'refs/heads/main'
+        run: |
+          echo "## 🚀 Infrastructure Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment || 'dev' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Project:** ${{ github.event.inputs.project || 'geekheads' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Outputs" >> $GITHUB_STEP_SUMMARY
+          echo "- **S3 Bucket:** ${{ steps.outputs.outputs.s3_bucket }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **CloudFront ID:** ${{ steps.outputs.outputs.cloudfront_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Website URL:** ${{ steps.outputs.outputs.website_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ GitHub Secrets Updated" >> $GITHUB_STEP_SUMMARY
+          echo "GitHub repository secrets have been automatically updated with the new infrastructure details." >> $GITHUB_STEP_SUMMARY
+
+      # Step 14: Notify on Slack (Optional)
+      # - name: Notify Slack
+      #   if: success()
+      #   uses: 8398a7/action-slack@v3
+      #   with:
+      #     status: ${{ job.status }}
+      #     text: 'Infrastructure deployed successfully'
+      #     webhook_url: ${{ secrets.SLACK_WEBHOOK }}

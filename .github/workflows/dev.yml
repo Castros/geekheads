@@ -9,10 +9,6 @@ on:
     branches:
       - dev
 
-# Environment variables
-env:
-  NODE_ENV: development
-
 jobs:
   build-and-deploy:
     name: Build and Deploy to Dev
@@ -54,8 +50,6 @@ jobs:
       # Step 6: Build the Next.js application
       - name: Build application
         run: npm run build
-        env:
-          NODE_ENV: development
 
       # Step 7: Configure AWS credentials
       - name: Configure AWS credentials

@@ -353,7 +353,7 @@ export default function Home() {
               href="tel:+1234567890"
               className="bg-white text-blue-600 px-8 py-3 rounded-lg font-semibold hover:bg-gray-100 transition-colors tracking-wide"
             >
-              {t('contact.call')}: (123) 456-7890
+              {t('contact.call')}: (899) 959-5973
             </a>
             <a
               href="mailto:info@geekheadsolutions.com"
